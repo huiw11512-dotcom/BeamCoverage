@@ -113,9 +113,9 @@ def _resolve_apk_source(explicit_apk: Path | None) -> Path:
         candidates.append(explicit_apk)
     candidates.extend(
         [
-            RELEASE_DIR / APP_APK_NAME,
-            DIST / APP_APK_NAME,
             Path(r"E:\AndroidDev\projects\BeamCoverageAndroid\app\build\outputs\apk\release\app-release.apk"),
+            DIST / APP_APK_NAME,
+            RELEASE_DIR / APP_APK_NAME,
         ]
     )
     for candidate in candidates:
