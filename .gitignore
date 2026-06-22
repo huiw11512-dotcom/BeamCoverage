@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local builds and generated artifacts
+build/
+dist/
+export_smoke_output/
+*.spec.bak
+*.log
+hs_err_pid*.log
+
+# Local environments
+.venv/
+venv/
+env/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Runtime/session files
+*.project.autosave
+smoke_*.json
+
+# Large release outputs belong in GitHub Releases, not git history.
+*.exe
+*.apk
+*.zip
