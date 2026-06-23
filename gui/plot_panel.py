@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import QLabel, QSplitter, QTextBrowser, QTabWidget, QWidget, QVBoxLayout
 
 from matplotlib import rcParams
@@ -68,7 +69,8 @@ class OpenGLSceneWidget(QWidget):
         self.items: list[object] = []
         if self.opengl_enabled:
             self.view = gl.GLViewWidget()
-            self.view.setBackgroundColor("w")
+            self.view.setBackgroundColor("#fbfcfe")
+            self.view.opts["fov"] = 42
             layout.addWidget(self.view, 1)
         else:
             self.view = None
@@ -678,8 +680,22 @@ def _plot_current_3d_opengl(
     z = np.where(visible, r_plot * W, np.nan)
     max_range = float(envelope.get("max_range_m", np.nan))
     method_label = str(envelope.get("envelopeMethodLabel", "near-field sampled + far-field extrapolated"))
-    title = f"Current S=S0 3D envelope    max r={_format_range(max_range)}    method={method_label}"
-    _plot_surface_opengl(scene, x, y, z, r_plot, title, derived=derived, params=params, show_direction=True)
+    title = f"当前扫描 S=S0 三维包络    最大距离 {_format_range(max_range)}    方法: {method_label}"
+    _plot_surface_opengl(
+        scene,
+        x,
+        y,
+        z,
+        r_plot,
+        title,
+        derived=derived,
+        params=params,
+        show_direction=True,
+        view_mode="envelope",
+        cmap_name="viridis",
+        alpha_min=0.58,
+        alpha_max=0.90,
+    )
 
 
 def _plot_pattern_3d_opengl(scene: OpenGLSceneWidget, uv: dict[str, np.ndarray | float], params: BeamParams | None) -> None:
@@ -691,8 +707,8 @@ def _plot_pattern_3d_opengl(scene: OpenGLSceneWidget, uv: dict[str, np.ndarray |
     theta_x = np.where(visible, np.degrees(np.arcsin(np.clip(u, -1.0, 1.0))), np.nan)
     theta_y = np.where(visible, np.degrees(np.arcsin(np.clip(v, -1.0, 1.0))), np.nan)
     z = np.where(visible, np.maximum(pattern_db, floor_db), np.nan)
-    title = "3D normalized pattern (dB)"
-    _plot_surface_opengl(
+    title = "三维方向图 Pattern (dB)"
+    scale_xyz = _plot_surface_opengl(
         scene,
         theta_x,
         theta_y,
@@ -704,10 +720,16 @@ def _plot_pattern_3d_opengl(scene: OpenGLSceneWidget, uv: dict[str, np.ndarray |
         value_min=floor_db,
         value_max=0.0,
         show_direction=False,
+        view_mode="pattern",
+        cmap_name="turbo",
+        alpha_min=0.16,
+        alpha_max=0.96,
     )
     scan_x = math.degrees(math.asin(max(-1.0, min(1.0, float(uv["scan_u"])))))
     scan_y = math.degrees(math.asin(max(-1.0, min(1.0, float(uv["scan_v"])))))
-    _add_gl_line(scene, np.array([[scan_x, scan_y, floor_db], [scan_x, scan_y, 0.0]], dtype=float), (1.0, 0.0, 0.0, 1.0), 3.0)
+    if scale_xyz is not None:
+        marker = np.array([[scan_x, scan_y, floor_db], [scan_x, scan_y, 0.0]], dtype=float) * np.asarray(scale_xyz, dtype=float)
+        _add_gl_line(scene, marker, (0.95, 0.06, 0.06, 0.98), 2.5)
 
 
 def _plot_scan_union_opengl(
@@ -715,7 +737,7 @@ def _plot_scan_union_opengl(
     info: dict[str, np.ndarray | float | int],
     derived: DerivedParams,
     params: BeamParams,
-) -> None:
+) -> tuple[float, float, float] | None:
     u = np.asarray(info.get("u", []), dtype=float)
     v = np.asarray(info.get("v", []), dtype=float)
     r_raw = np.asarray(info["Rsurf"], dtype=float)
@@ -734,10 +756,24 @@ def _plot_scan_union_opengl(
         r = r_raw
     max_range = float(info["maxRange_m"]) if math.isfinite(float(info["maxRange_m"])) else float("nan")
     title = (
-        f"Scan-union S=S0 3D envelope    max r={_format_range(max_range)}    "
-        f"centers={info.get('numScanCenters', 'n/a')}"
+        f"扫描并集 S=S0 三维包络    最大距离 {_format_range(max_range)}    "
+        f"扫描中心 {info.get('numScanCenters', 'n/a')}"
     )
-    _plot_surface_opengl(scene, x, y, z, r, title, derived=derived, params=params, show_direction=True)
+    _plot_surface_opengl(
+        scene,
+        x,
+        y,
+        z,
+        r,
+        title,
+        derived=derived,
+        params=params,
+        show_direction=True,
+        view_mode="envelope",
+        cmap_name="viridis",
+        alpha_min=0.55,
+        alpha_max=0.88,
+    )
 
 
 def _plot_surface_opengl(
@@ -753,9 +789,11 @@ def _plot_surface_opengl(
     value_min: float | None = None,
     value_max: float | None = None,
     show_direction: bool = False,
+    view_mode: str = "envelope",
+    cmap_name: str = "turbo",
+    alpha_min: float = 0.55,
+    alpha_max: float = 0.94,
 ) -> None:
-    if not scene.clear_scene(title):
-        return
     x_arr = np.asarray(x, dtype=float)
     y_arr = np.asarray(y, dtype=float)
     z_arr = np.asarray(z, dtype=float)
@@ -772,7 +810,14 @@ def _plot_surface_opengl(
     finite = np.isfinite(x_arr) & np.isfinite(y_arr) & np.isfinite(z_arr) & np.isfinite(value_arr)
     if not np.any(finite):
         scene.clear_scene(title + "    no finite surface")
-        return
+        return None
+    scale_xyz = _auto_display_scale(x_arr, y_arr, z_arr, view_mode)
+    title_with_scale = title + _display_scale_note(scale_xyz)
+    if not scene.clear_scene(title_with_scale):
+        return None
+    x_view = x_arr * scale_xyz[0]
+    y_view = y_arr * scale_xyz[1]
+    z_view = z_arr * scale_xyz[2]
 
     finite_values = value_arr[finite]
     vmin = float(value_min) if value_min is not None else float(np.nanpercentile(finite_values, 2.0))
@@ -782,17 +827,35 @@ def _plot_surface_opengl(
     if not math.isfinite(vmax) or vmax <= vmin:
         vmax = vmin + 1.0
 
-    mesh_item = _make_gl_mesh_item(x_arr, y_arr, z_arr, value_arr, vmin, vmax)
+    mesh_item = _make_gl_mesh_item(
+        x_view,
+        y_view,
+        z_view,
+        value_arr,
+        vmin,
+        vmax,
+        cmap_name=cmap_name,
+        alpha_min=alpha_min,
+        alpha_max=alpha_max,
+    )
     if mesh_item is not None:
         scene.add_item(mesh_item)
     else:
-        pos = np.column_stack([x_arr[finite], y_arr[finite], z_arr[finite]]).astype(float)
-        colors = _rgba_for_values(value_arr[finite], vmin, vmax, alpha=0.80)
+        pos = np.column_stack([x_view[finite], y_view[finite], z_view[finite]]).astype(float)
+        colors = _rgba_for_values(
+            value_arr[finite],
+            vmin,
+            vmax,
+            alpha=alpha_max,
+            alpha_min=alpha_min,
+            cmap_name=cmap_name,
+        )
         scatter = gl.GLScatterPlotItem(pos=pos, color=colors, size=2.0, pxMode=True)
         scene.add_item(scatter)
 
-    _add_gl_reference_items(scene, x_arr, y_arr, z_arr, derived, params, show_direction)
-    _set_gl_camera(scene, x_arr, y_arr, z_arr)
+    _add_gl_reference_items(scene, x_view, y_view, z_view, derived, params, show_direction, scale_xyz=scale_xyz)
+    _set_gl_camera(scene, x_view, y_view, z_view, view_mode=view_mode)
+    return scale_xyz
 
 
 def _make_gl_mesh_item(
@@ -802,6 +865,10 @@ def _make_gl_mesh_item(
     values: np.ndarray,
     vmin: float,
     vmax: float,
+    *,
+    cmap_name: str,
+    alpha_min: float,
+    alpha_max: float,
 ) -> object | None:
     if gl is None or MeshData is None:
         return None
@@ -829,15 +896,48 @@ def _make_gl_mesh_item(
             face_values.append(val)
     if not faces:
         return None
-    colors = _rgba_for_values(np.asarray(face_values, dtype=float), vmin, vmax, alpha=0.78)
+    colors = _rgba_for_values(
+        np.asarray(face_values, dtype=float),
+        vmin,
+        vmax,
+        alpha=alpha_max,
+        alpha_min=alpha_min,
+        cmap_name=cmap_name,
+    )
     mesh = MeshData(vertexes=vertices, faces=np.asarray(faces, dtype=np.int32), faceColors=colors.astype(np.float32))
-    return gl.GLMeshItem(meshdata=mesh, smooth=False, drawFaces=True, drawEdges=False, shader="shaded", glOptions="translucent")
+    return gl.GLMeshItem(
+        meshdata=mesh,
+        smooth=False,
+        drawFaces=True,
+        drawEdges=False,
+        shader=None,
+        computeNormals=False,
+        glOptions="translucent",
+    )
 
 
-def _rgba_for_values(values: np.ndarray, vmin: float, vmax: float, alpha: float) -> np.ndarray:
-    norm = Normalize(vmin=vmin, vmax=vmax)
-    colors = colormaps["viridis"](norm(np.asarray(values, dtype=float)))
-    colors[:, 3] = alpha
+def _rgba_for_values(
+    values: np.ndarray,
+    vmin: float,
+    vmax: float,
+    alpha: float,
+    *,
+    alpha_min: float | None = None,
+    cmap_name: str = "turbo",
+) -> np.ndarray:
+    denom = max(float(vmax) - float(vmin), 1e-12)
+    scaled = np.clip((np.asarray(values, dtype=float) - float(vmin)) / denom, 0.0, 1.0)
+    try:
+        cmap = colormaps[cmap_name]
+    except KeyError:
+        cmap = colormaps["viridis"]
+    colors = cmap(scaled)
+    # OpenGL's unlit face colors are more legible if the darkest colors are lifted slightly.
+    colors[:, :3] = np.clip(colors[:, :3] * 0.88 + 0.12, 0.0, 1.0)
+    if alpha_min is None:
+        colors[:, 3] = alpha
+    else:
+        colors[:, 3] = np.clip(alpha_min + (alpha - alpha_min) * np.power(scaled, 0.68), 0.05, 1.0)
     return colors.astype(np.float32)
 
 
@@ -849,6 +949,8 @@ def _add_gl_reference_items(
     derived: DerivedParams | None,
     params: BeamParams | None,
     show_direction: bool,
+    *,
+    scale_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> None:
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
     max_x = max(float(np.nanmax(np.abs(x[finite]))), 1.0) if np.any(finite) else 1.0
@@ -859,23 +961,31 @@ def _add_gl_reference_items(
     grid.setSize(x=grid_size, y=grid_size)
     spacing = _nice_grid_spacing(grid_size)
     grid.setSpacing(x=spacing, y=spacing)
+    grid.setColor((198, 208, 220, 82))
     scene.add_item(grid)
-    _add_gl_line(scene, np.array([[-max_x, 0.0, 0.0], [max_x, 0.0, 0.0]], dtype=float), (0.8, 0.05, 0.05, 1.0), 2.0)
-    _add_gl_line(scene, np.array([[0.0, -max_y, 0.0], [0.0, max_y, 0.0]], dtype=float), (0.05, 0.45, 0.9, 1.0), 2.0)
-    _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, max_z]], dtype=float), (0.05, 0.55, 0.15, 1.0), 2.0)
     if derived is None:
         return
+    axis_color = (0.22, 0.31, 0.42, 0.52)
+    _add_gl_line(scene, np.array([[-max_x, 0.0, 0.0], [max_x, 0.0, 0.0]], dtype=float), axis_color, 1.25)
+    _add_gl_line(scene, np.array([[0.0, -max_y, 0.0], [0.0, max_y, 0.0]], dtype=float), axis_color, 1.25)
+    _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, max_z]], dtype=float), (0.18, 0.38, 0.50, 0.62), 1.4)
     outline = _aperture_outline_points(derived, params, z=0.0)
     if outline.shape[0] >= 2:
-        _add_gl_line(scene, outline, (0.0, 0.0, 0.0, 1.0), 2.5)
+        outline = outline * np.asarray(scale_xyz, dtype=float)
+        _add_gl_line(scene, outline, (0.02, 0.03, 0.04, 0.95), 2.2)
     if show_direction:
-        length = max(0.35 * max_z, derived.aperture_m, 1.0)
-        _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, length]], dtype=float), (0.0, 0.0, 0.0, 1.0), 1.8)
+        length = max(0.35 * max_z / max(scale_xyz[2], 1e-12), derived.aperture_m, 1.0)
+        normal = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, length]], dtype=float) * np.asarray(scale_xyz, dtype=float)
+        _add_gl_line(scene, normal, (0.05, 0.05, 0.05, 0.86), 1.6)
+        direction = (
+            np.array([[0.0, 0.0, 0.0], [length * derived.u0, length * derived.v0, length * derived.w0]], dtype=float)
+            * np.asarray(scale_xyz, dtype=float)
+        )
         _add_gl_line(
             scene,
-            np.array([[0.0, 0.0, 0.0], [length * derived.u0, length * derived.v0, length * derived.w0]], dtype=float),
-            (1.0, 0.0, 0.0, 1.0),
-            3.0,
+            direction,
+            (0.95, 0.08, 0.08, 0.98),
+            2.4,
         )
 
 
@@ -886,18 +996,70 @@ def _add_gl_line(scene: OpenGLSceneWidget, points: np.ndarray, color: tuple[floa
     scene.add_item(line)
 
 
-def _set_gl_camera(scene: OpenGLSceneWidget, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> None:
+def _set_gl_camera(scene: OpenGLSceneWidget, x: np.ndarray, y: np.ndarray, z: np.ndarray, *, view_mode: str) -> None:
     if not scene.opengl_enabled or scene.view is None:
         return
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
     if np.any(finite):
+        x_min = float(np.nanmin(x[finite]))
+        x_max = float(np.nanmax(x[finite]))
+        y_min = float(np.nanmin(y[finite]))
+        y_max = float(np.nanmax(y[finite]))
+        z_min = float(np.nanmin(z[finite]))
+        z_max = float(np.nanmax(z[finite]))
+        center = QVector3D((x_min + x_max) / 2.0, (y_min + y_max) / 2.0, (z_min + z_max) / 2.0)
         span_x = max(float(np.nanmax(x[finite]) - np.nanmin(x[finite])), 1.0)
         span_y = max(float(np.nanmax(y[finite]) - np.nanmin(y[finite])), 1.0)
         span_z = max(float(np.nanmax(z[finite]) - np.nanmin(z[finite])), 1.0)
-        distance = 1.9 * max(span_x, span_y, 0.8 * span_z)
+        diagonal = math.sqrt(span_x * span_x + span_y * span_y + span_z * span_z)
+        distance = max(2.05 * diagonal, 2.45 * max(span_x, span_y), 1.75 * span_z)
     else:
+        center = QVector3D(0.0, 0.0, 0.0)
         distance = 10.0
-    scene.view.setCameraPosition(distance=distance, elevation=24.0, azimuth=-42.0)
+    if view_mode == "pattern":
+        elevation = 28.0
+        azimuth = -38.0
+    else:
+        elevation = 22.0
+        azimuth = -36.0
+    scene.view.setCameraPosition(pos=center, distance=distance, elevation=elevation, azimuth=azimuth)
+
+
+def _auto_display_scale(x: np.ndarray, y: np.ndarray, z: np.ndarray, view_mode: str) -> tuple[float, float, float]:
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    if not np.any(finite):
+        return (1.0, 1.0, 1.0)
+    span_x = max(float(np.nanmax(x[finite]) - np.nanmin(x[finite])), 1e-9)
+    span_y = max(float(np.nanmax(y[finite]) - np.nanmin(y[finite])), 1e-9)
+    span_z = max(float(np.nanmax(z[finite]) - np.nanmin(z[finite])), 1e-9)
+    sx = sy = sz = 1.0
+    lateral = max(span_x, span_y)
+    if view_mode == "pattern":
+        target_z = 0.50 * lateral
+        if span_z < target_z:
+            sz = min(3.0, target_z / span_z)
+    else:
+        if span_z > 3.0 * lateral:
+            lateral_scale = min(25.0, max(1.0, 0.42 * span_z / lateral))
+            sx = sy = lateral_scale
+        elif lateral > 4.0 * span_z:
+            sz = min(8.0, max(1.0, 0.35 * lateral / span_z))
+    return (sx, sy, sz)
+
+
+def _display_scale_note(scale_xyz: tuple[float, float, float]) -> str:
+    sx, sy, sz = scale_xyz
+    parts: list[str] = []
+    if abs(sx - 1.0) > 0.15 or abs(sy - 1.0) > 0.15:
+        if abs(sx - sy) < 0.05:
+            parts.append(f"横向显示×{sx:.3g}")
+        else:
+            parts.append(f"x显示×{sx:.3g}, y显示×{sy:.3g}")
+    if abs(sz - 1.0) > 0.15:
+        parts.append(f"z显示×{sz:.3g}")
+    if not parts:
+        return ""
+    return "    " + "，".join(parts)
 
 
 def _nice_grid_spacing(size: float) -> float:
