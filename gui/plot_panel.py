@@ -891,8 +891,7 @@ def _plot_surface_opengl(
         scene.clear_scene(title + "    no finite surface")
         return None
     scale_xyz = _auto_display_scale(x_arr, y_arr, z_arr, view_mode)
-    title_with_scale = title + _display_scale_note(scale_xyz)
-    if not scene.clear_scene(title_with_scale):
+    if not scene.clear_scene(title):
         return None
     x_view = x_arr * scale_xyz[0]
     y_view = y_arr * scale_xyz[1]
@@ -932,7 +931,7 @@ def _plot_surface_opengl(
         scatter = gl.GLScatterPlotItem(pos=pos, color=colors, size=2.0, pxMode=True)
         scene.add_item(scatter)
 
-    _add_gl_reference_items(scene, x_view, y_view, z_view, derived, params, show_direction, scale_xyz=scale_xyz)
+    _add_gl_reference_items(scene, x_arr, y_arr, z_arr, derived, params, show_direction, scale_xyz=scale_xyz)
     _set_gl_camera(scene, x_view, y_view, z_view, view_mode=view_mode)
     return scale_xyz
 
@@ -1043,9 +1042,13 @@ def _add_gl_reference_items(
         x_min, x_max = -1.0, 1.0
         y_min, y_max = -1.0, 1.0
         z_min, z_max = 0.0, 1.0
-    max_x = max(abs(x_min), abs(x_max), 1.0)
-    max_y = max(abs(y_min), abs(y_max), 1.0)
-    max_z = max(abs(z_min), abs(z_max), 1.0)
+    sx, sy, sz = scale_xyz
+    x_min_view, x_max_view = x_min * sx, x_max * sx
+    y_min_view, y_max_view = y_min * sy, y_max * sy
+    z_min_view, z_max_view = z_min * sz, z_max * sz
+    max_x = max(abs(x_min_view), abs(x_max_view), 1.0)
+    max_y = max(abs(y_min_view), abs(y_max_view), 1.0)
+    max_z = max(abs(z_min_view), abs(z_max_view), 1.0)
     grid_size = max(max_x, max_y) * 2.1
     grid = gl.GLGridItem()
     grid.setSize(x=grid_size, y=grid_size)
@@ -1117,18 +1120,22 @@ def _add_gl_coordinate_axes(
     z_color: tuple[float, float, float, float],
 ) -> None:
     x_min, x_max, y_min, y_max, z_min, z_max = bounds
-    span_x = max(x_max - x_min, 1e-9)
-    span_y = max(y_max - y_min, 1e-9)
-    span_z = max(z_max - z_min, 1e-9)
+    sx, sy, sz = scale_xyz
+    x_min_view, x_max_view = x_min * sx, x_max * sx
+    y_min_view, y_max_view = y_min * sy, y_max * sy
+    z_min_view, z_max_view = z_min * sz, z_max * sz
+    span_x = max(x_max_view - x_min_view, 1e-9)
+    span_y = max(y_max_view - y_min_view, 1e-9)
+    span_z = max(z_max_view - z_min_view, 1e-9)
     pad_x = 0.06 * span_x
     pad_y = 0.06 * span_y
     pad_z = 0.06 * span_z
-    x0 = x_min - pad_x
-    y0 = y_min - pad_y
-    z0 = z_min
-    x1 = x_max + pad_x
-    y1 = y_max + pad_y
-    z1 = z_max + pad_z
+    x0 = x_min_view - pad_x
+    y0 = y_min_view - pad_y
+    z0 = z_min_view
+    x1 = x_max_view + pad_x
+    y1 = y_max_view + pad_y
+    z1 = z_max_view + pad_z
     tick_x = max(0.035 * span_y, 0.012 * span_x)
     tick_y = max(0.035 * span_x, 0.012 * span_y)
     tick_z = 0.026 * max(span_x, span_y)
@@ -1139,16 +1146,18 @@ def _add_gl_coordinate_axes(
 
     text_color = (31, 41, 55, 255)
     tick_color = (54, 65, 82, 0.72)
-    sx, sy, sz = scale_xyz
     for tick in _axis_ticks(x_min, x_max, max_ticks=5):
-        _add_gl_line(scene, np.array([[tick, y0, z0], [tick, y0 + tick_x, z0]], dtype=float), tick_color, 1.2)
-        scene.add_axis_label(_format_axis_tick(tick / max(sx, 1e-12)), (tick, y0 - 2.1 * tick_x, z0), color=text_color, size=9)
+        tick_view = tick * sx
+        _add_gl_line(scene, np.array([[tick_view, y0, z0], [tick_view, y0 + tick_x, z0]], dtype=float), tick_color, 1.2)
+        scene.add_axis_label(_format_axis_tick(tick), (tick_view, y0 - 2.1 * tick_x, z0), color=text_color, size=9)
     for tick in _axis_ticks(y_min, y_max, max_ticks=5):
-        _add_gl_line(scene, np.array([[x0, tick, z0], [x0 + tick_y, tick, z0]], dtype=float), tick_color, 1.2)
-        scene.add_axis_label(_format_axis_tick(tick / max(sy, 1e-12)), (x0 - 2.3 * tick_y, tick, z0), color=text_color, size=9)
+        tick_view = tick * sy
+        _add_gl_line(scene, np.array([[x0, tick_view, z0], [x0 + tick_y, tick_view, z0]], dtype=float), tick_color, 1.2)
+        scene.add_axis_label(_format_axis_tick(tick), (x0 - 2.3 * tick_y, tick_view, z0), color=text_color, size=9)
     for tick in _axis_ticks(z_min, z_max, max_ticks=5):
-        _add_gl_line(scene, np.array([[x0, y0, tick], [x0 + tick_z, y0, tick]], dtype=float), tick_color, 1.2)
-        scene.add_axis_label(_format_axis_tick(tick / max(sz, 1e-12)), (x0 - 2.4 * tick_z, y0, tick), color=text_color, size=9)
+        tick_view = tick * sz
+        _add_gl_line(scene, np.array([[x0, y0, tick_view], [x0 + tick_z, y0, tick_view]], dtype=float), tick_color, 1.2)
+        scene.add_axis_label(_format_axis_tick(tick), (x0 - 2.4 * tick_z, y0, tick_view), color=text_color, size=9)
 
     scene.add_axis_label(x_label, (x1 + 0.35 * pad_x, y0, z0), color=(8, 82, 190, 255), size=12, bold=True)
     scene.add_axis_label(y_label, (x0, y1 + 0.35 * pad_y, z0), color=(0, 128, 66, 255), size=12, bold=True)
@@ -1244,33 +1253,37 @@ def _auto_display_scale(x: np.ndarray, y: np.ndarray, z: np.ndarray, view_mode: 
     span_y = max(float(np.nanmax(y[finite]) - np.nanmin(y[finite])), 1e-9)
     span_z = max(float(np.nanmax(z[finite]) - np.nanmin(z[finite])), 1e-9)
     sx = sy = sz = 1.0
-    lateral = max(span_x, span_y)
     if view_mode == "pattern":
-        target_z = 0.50 * lateral
+        lateral = max(span_x, span_y)
+        target_z = 0.48 * lateral
         if span_z < target_z:
             sz = min(3.0, target_z / span_z)
     else:
-        if span_z > 3.0 * lateral:
-            lateral_scale = min(25.0, max(1.0, 0.42 * span_z / lateral))
-            sx = sy = lateral_scale
-        elif lateral > 4.0 * span_z:
-            sz = min(8.0, max(1.0, 0.35 * lateral / span_z))
+        sx, sy = _balanced_lateral_scale(span_x, span_y)
+        display_x = span_x * sx
+        display_y = span_y * sy
+        lateral = max(display_x, display_y)
+        if span_z > 1.35 * lateral:
+            lateral_boost = min(24.0, max(1.0, 0.88 * span_z / lateral))
+            sx *= lateral_boost
+            sy *= lateral_boost
+            lateral = max(span_x * sx, span_y * sy)
+        if lateral > 4.2 * span_z:
+            sz = min(7.0, max(1.0, 0.42 * lateral / span_z))
     return (sx, sy, sz)
 
 
-def _display_scale_note(scale_xyz: tuple[float, float, float]) -> str:
-    sx, sy, sz = scale_xyz
-    parts: list[str] = []
-    if abs(sx - 1.0) > 0.15 or abs(sy - 1.0) > 0.15:
-        if abs(sx - sy) < 0.05:
-            parts.append(f"横向显示×{sx:.3g}")
-        else:
-            parts.append(f"x显示×{sx:.3g}, y显示×{sy:.3g}")
-    if abs(sz - 1.0) > 0.15:
-        parts.append(f"z显示×{sz:.3g}")
-    if not parts:
-        return ""
-    return "    " + "，".join(parts)
+def _balanced_lateral_scale(span_x: float, span_y: float) -> tuple[float, float]:
+    """Expand the visually tiny horizontal axis while preserving real tick values."""
+    target_ratio = 2.25
+    max_axis_scale = 12.0
+    if span_x <= 0.0 or span_y <= 0.0:
+        return (1.0, 1.0)
+    if span_x > target_ratio * span_y:
+        return (1.0, min(max_axis_scale, span_x / (target_ratio * span_y)))
+    if span_y > target_ratio * span_x:
+        return (min(max_axis_scale, span_y / (target_ratio * span_x)), 1.0)
+    return (1.0, 1.0)
 
 
 def _nice_grid_spacing(size: float) -> float:
