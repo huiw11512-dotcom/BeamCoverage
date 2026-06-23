@@ -4,7 +4,7 @@ PySide6 desktop software for phased-array power-density envelopes and scan cover
 
 BeamCoverage is a Windows-first engineering tool for large-aperture phased-array antenna structure checks, scan analysis, far-field pattern calculation, S=S0 power-density envelope prediction, and scan-union coverage review. The desktop EXE is the primary validated product; the Excel/WPS workbook and companion HTML are review aids.
 
-The desktop 3D pages use an OpenGL display layer for smooth rotation and include explicit horizontal/vertical/height axis legends, direction references, and color-scale legends for S=S0 envelopes and normalized pattern views.
+The desktop 3D pages use an OpenGL display layer for smooth rotation and include real horizontal/vertical/height coordinate axes with tick labels and engineering units for S=S0 envelopes and normalized pattern views.
 
 Project homepage and update channel:
 
