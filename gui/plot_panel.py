@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QVector3D
+from PySide6.QtGui import QFont, QVector3D
 from PySide6.QtWidgets import QLabel, QSplitter, QTextBrowser, QTabWidget, QWidget, QVBoxLayout
 
 from matplotlib import rcParams
@@ -62,10 +62,19 @@ class OpenGLSceneWidget(QWidget):
         self.info = QLabel("")
         self.info.setWordWrap(True)
         self.info.setStyleSheet("QLabel { color: #26384f; padding: 6px 8px; font-weight: 600; }")
+        self.legend = QLabel("")
+        self.legend.setTextFormat(Qt.TextFormat.RichText)
+        self.legend.setWordWrap(True)
+        self.legend.setVisible(False)
+        self.legend.setStyleSheet(
+            "QLabel { color: #334155; background: #f8fafc; border-top: 1px solid #d8e0ea; "
+            "border-bottom: 1px solid #d8e0ea; padding: 4px 8px; font-size: 12px; }"
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.info)
+        layout.addWidget(self.legend)
         self.items: list[object] = []
         if self.opengl_enabled:
             self.view = gl.GLViewWidget()
@@ -81,6 +90,7 @@ class OpenGLSceneWidget(QWidget):
 
     def clear_scene(self, text: str = "") -> bool:
         self.info.setText(text)
+        self.set_legend("")
         if not self.opengl_enabled or self.view is None:
             return False
         for item in self.items:
@@ -90,6 +100,10 @@ class OpenGLSceneWidget(QWidget):
                 pass
         self.items.clear()
         return True
+
+    def set_legend(self, html: str = "") -> None:
+        self.legend.setText(html)
+        self.legend.setVisible(bool(html))
 
     def add_item(self, item: object) -> None:
         if not self.opengl_enabled or self.view is None:
@@ -826,6 +840,17 @@ def _plot_surface_opengl(
         vmin = float(np.nanmin(finite_values))
     if not math.isfinite(vmax) or vmax <= vmin:
         vmax = vmin + 1.0
+    scene.set_legend(
+        _gl_legend_html(
+            view_mode=view_mode,
+            cmap_name=cmap_name,
+            vmin=vmin,
+            vmax=vmax,
+            scale_xyz=scale_xyz,
+            show_direction=show_direction,
+            has_geometry=derived is not None,
+        )
+    )
 
     mesh_item = _make_gl_mesh_item(
         x_view,
@@ -856,6 +881,64 @@ def _plot_surface_opengl(
     _add_gl_reference_items(scene, x_view, y_view, z_view, derived, params, show_direction, scale_xyz=scale_xyz)
     _set_gl_camera(scene, x_view, y_view, z_view, view_mode=view_mode)
     return scale_xyz
+
+
+def _gl_legend_html(
+    *,
+    view_mode: str,
+    cmap_name: str,
+    vmin: float,
+    vmax: float,
+    scale_xyz: tuple[float, float, float],
+    show_direction: bool,
+    has_geometry: bool,
+) -> str:
+    if view_mode == "pattern":
+        axes = "横向轴 θx=asin(u)，纵向轴 θy=asin(v)，高度轴 Pattern(dB)"
+        color_label = "颜色：归一化方向图(dB)"
+        direction = "蓝线：θx横向；绿线：θy纵向；红色标记/线：当前扫描方向"
+    else:
+        axes = "横向轴 x，纵向轴 y，高度轴 z，单位均为 m"
+        color_label = "颜色：S=S0 包络距离 r(m)"
+        direction = "蓝线：x横向；绿线：y纵向；灰线：z高度；黑线：法向；红线：当前扫描方向" if show_direction else "口面轮廓：阵列投影"
+    scale_note = _display_scale_note(scale_xyz).strip()
+    if scale_note:
+        scale_note = f"；显示比例：{scale_note}"
+    swatches = _legend_swatches(cmap_name, vmin, vmax)
+    geometry_note = "；含阵列口面/方向参考" if has_geometry else ""
+    return (
+        f"<b>坐标</b>：{axes}{scale_note}{geometry_note}&nbsp;&nbsp; "
+        f"<b>图例</b>：{direction}&nbsp;&nbsp; {color_label} {swatches}"
+    )
+
+
+def _legend_swatches(cmap_name: str, vmin: float, vmax: float) -> str:
+    if cmap_name == "turbo":
+        colors = ("#30123b", "#4777ef", "#1ae4b6", "#faba39", "#a00000")
+    else:
+        colors = ("#440154", "#31688e", "#35b779", "#fde725")
+    mid = (float(vmin) + float(vmax)) / 2.0
+    labels = (_format_legend_value(vmin), _format_legend_value(mid), _format_legend_value(vmax))
+    blocks = []
+    for idx, color in enumerate(colors):
+        text = labels[0] if idx == 0 else labels[1] if idx == len(colors) // 2 else labels[2] if idx == len(colors) - 1 else "&nbsp;"
+        text_color = "#111827" if color in {"#fde725", "#faba39", "#1ae4b6"} else "#ffffff"
+        blocks.append(
+            f"<span style='display:inline-block; min-width:38px; padding:1px 4px; "
+            f"background:{color}; color:{text_color}; text-align:center;'>{text}</span>"
+        )
+    return "".join(blocks)
+
+
+def _format_legend_value(value: float) -> str:
+    if not math.isfinite(float(value)):
+        return "nan"
+    value = float(value)
+    if abs(value) >= 1000.0:
+        return f"{value:.3g}"
+    if abs(value) >= 10.0:
+        return f"{value:.1f}"
+    return f"{value:.3g}"
 
 
 def _make_gl_mesh_item(
@@ -956,6 +1039,7 @@ def _add_gl_reference_items(
     max_x = max(float(np.nanmax(np.abs(x[finite]))), 1.0) if np.any(finite) else 1.0
     max_y = max(float(np.nanmax(np.abs(y[finite]))), 1.0) if np.any(finite) else 1.0
     max_z = max(float(np.nanmax(np.abs(z[finite]))), 1.0) if np.any(finite) else 1.0
+    z_top = max(float(np.nanmax(z[finite])), 0.0) if np.any(finite) else 0.0
     grid_size = max(max_x, max_y) * 2.1
     grid = gl.GLGridItem()
     grid.setSize(x=grid_size, y=grid_size)
@@ -963,12 +1047,22 @@ def _add_gl_reference_items(
     grid.setSpacing(x=spacing, y=spacing)
     grid.setColor((198, 208, 220, 82))
     scene.add_item(grid)
+    x_axis_color = (0.04, 0.36, 0.86, 0.86)
+    y_axis_color = (0.02, 0.55, 0.26, 0.86)
+    z_axis_color = (0.28, 0.36, 0.46, 0.74)
     if derived is None:
+        label_z = z_top + 0.05 * max_z
+        _add_gl_line(scene, np.array([[-max_x, 0.0, z_top], [max_x, 0.0, z_top]], dtype=float), x_axis_color, 1.8)
+        _add_gl_line(scene, np.array([[0.0, -max_y, z_top], [0.0, max_y, z_top]], dtype=float), y_axis_color, 1.8)
+        _add_gl_text(scene, "θx 横向", (max_x * 1.05, -max_y * 0.96, label_z), color=(38, 50, 67, 255))
+        _add_gl_text(scene, "θy 纵向", (-max_x * 0.98, max_y * 1.05, label_z), color=(38, 50, 67, 255))
         return
-    axis_color = (0.22, 0.31, 0.42, 0.52)
-    _add_gl_line(scene, np.array([[-max_x, 0.0, 0.0], [max_x, 0.0, 0.0]], dtype=float), axis_color, 1.25)
-    _add_gl_line(scene, np.array([[0.0, -max_y, 0.0], [0.0, max_y, 0.0]], dtype=float), axis_color, 1.25)
-    _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, max_z]], dtype=float), (0.18, 0.38, 0.50, 0.62), 1.4)
+    _add_gl_line(scene, np.array([[-max_x, 0.0, 0.0], [max_x, 0.0, 0.0]], dtype=float), x_axis_color, 1.8)
+    _add_gl_line(scene, np.array([[0.0, -max_y, 0.0], [0.0, max_y, 0.0]], dtype=float), y_axis_color, 1.8)
+    _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, max_z]], dtype=float), z_axis_color, 1.55)
+    _add_gl_text(scene, "x 横向", (max_x * 1.06, 0.0, 0.0), color=(38, 50, 67, 255))
+    _add_gl_text(scene, "y 纵向", (0.0, max_y * 1.06, 0.0), color=(38, 50, 67, 255))
+    _add_gl_text(scene, "z 高度/距离", (0.0, 0.0, max_z * 1.04), color=(38, 50, 67, 255))
     outline = _aperture_outline_points(derived, params, z=0.0)
     if outline.shape[0] >= 2:
         outline = outline * np.asarray(scale_xyz, dtype=float)
@@ -977,6 +1071,8 @@ def _add_gl_reference_items(
         length = max(0.35 * max_z / max(scale_xyz[2], 1e-12), derived.aperture_m, 1.0)
         normal = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, length]], dtype=float) * np.asarray(scale_xyz, dtype=float)
         _add_gl_line(scene, normal, (0.05, 0.05, 0.05, 0.86), 1.6)
+        normal_label = normal[-1] * 1.03 + np.array([-0.04 * max_x, 0.0, 0.0])
+        _add_gl_text(scene, "法向", tuple(normal_label), color=(20, 25, 32, 255))
         direction = (
             np.array([[0.0, 0.0, 0.0], [length * derived.u0, length * derived.v0, length * derived.w0]], dtype=float)
             * np.asarray(scale_xyz, dtype=float)
@@ -987,6 +1083,8 @@ def _add_gl_reference_items(
             (0.95, 0.08, 0.08, 0.98),
             2.4,
         )
+        direction_label = direction[-1] * 1.04 + np.array([0.04 * max_x, 0.04 * max_y, 0.0])
+        _add_gl_text(scene, "当前扫描方向", tuple(direction_label), color=(210, 25, 25, 255))
 
 
 def _add_gl_line(scene: OpenGLSceneWidget, points: np.ndarray, color: tuple[float, float, float, float], width: float) -> None:
@@ -994,6 +1092,23 @@ def _add_gl_line(scene: OpenGLSceneWidget, points: np.ndarray, color: tuple[floa
         return
     line = gl.GLLinePlotItem(pos=np.asarray(points, dtype=float), color=color, width=width, antialias=True, mode="line_strip")
     scene.add_item(line)
+
+
+def _add_gl_text(
+    scene: OpenGLSceneWidget,
+    text: str,
+    pos: tuple[float, float, float] | np.ndarray,
+    *,
+    color: tuple[int, int, int, int] = (38, 50, 67, 255),
+) -> None:
+    if gl is None or not hasattr(gl, "GLTextItem"):
+        return
+    try:
+        font = QFont("Microsoft YaHei", 11)
+        item = gl.GLTextItem(pos=np.asarray(pos, dtype=float), text=text, color=color, font=font)
+        scene.add_item(item)
+    except Exception:
+        return
 
 
 def _set_gl_camera(scene: OpenGLSceneWidget, x: np.ndarray, y: np.ndarray, z: np.ndarray, *, view_mode: str) -> None:
