@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtWidgets import QTextBrowser, QTabWidget, QWidget, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QSplitter, QTextBrowser, QTabWidget, QWidget, QVBoxLayout
 
 from matplotlib import rcParams
 from matplotlib import colormaps
@@ -18,6 +20,16 @@ from matplotlib.figure import Figure
 from app_info import resource_path
 from core.envelope import append_far_field_for_plot
 from core.geometry import BeamParams, DerivedParams, cosd, sind
+
+try:
+    import pyqtgraph.opengl as gl
+    from pyqtgraph.opengl import MeshData
+
+    _HAS_OPENGL = True
+except Exception:
+    gl = None
+    MeshData = None
+    _HAS_OPENGL = False
 
 
 rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Arial Unicode MS", "DejaVu Sans"]
@@ -35,6 +47,133 @@ class FigureTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
+
+
+class OpenGLSceneWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.opengl_enabled = bool(
+            _HAS_OPENGL
+            and gl is not None
+            and MeshData is not None
+            and os.environ.get("QT_QPA_PLATFORM", "").lower() not in {"offscreen", "minimal"}
+        )
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("QLabel { color: #26384f; padding: 6px 8px; font-weight: 600; }")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.info)
+        self.items: list[object] = []
+        if self.opengl_enabled:
+            self.view = gl.GLViewWidget()
+            self.view.setBackgroundColor("w")
+            layout.addWidget(self.view, 1)
+        else:
+            self.view = None
+            fallback = QLabel("OpenGL view is unavailable in this environment.")
+            fallback.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            fallback.setStyleSheet("QLabel { color: #607086; background: white; border: 1px solid #d8e0ea; }")
+            layout.addWidget(fallback, 1)
+
+    def clear_scene(self, text: str = "") -> bool:
+        self.info.setText(text)
+        if not self.opengl_enabled or self.view is None:
+            return False
+        for item in self.items:
+            try:
+                self.view.removeItem(item)
+            except Exception:
+                pass
+        self.items.clear()
+        return True
+
+    def add_item(self, item: object) -> None:
+        if not self.opengl_enabled or self.view is None:
+            return
+        self.view.addItem(item)
+        self.items.append(item)
+
+    def export_png(self, path: str | Path) -> None:
+        if self.opengl_enabled and self.view is not None:
+            pixmap = self.grab()
+            if not pixmap.save(str(path)):
+                raise RuntimeError(f"Failed to save OpenGL view to {path}")
+            return
+        raise RuntimeError("OpenGL view is unavailable.")
+
+
+class GL3DTab(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.figure = Figure(figsize=(7, 5))
+        self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.scene = OpenGLSceneWidget()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if self.scene.opengl_enabled:
+            self.toolbar.hide()
+            self.canvas.hide()
+            layout.addWidget(self.scene)
+        else:
+            layout.addWidget(self.toolbar)
+            layout.addWidget(self.canvas)
+
+    def set_placeholder(self, text: str) -> None:
+        if self.scene.opengl_enabled:
+            self.scene.clear_scene(text)
+            return
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.axis("off")
+        ax.text(0.5, 0.5, text, ha="center", va="center", fontsize=12)
+        self.canvas.draw_idle()
+
+    def export_png(self, path: str | Path) -> None:
+        if self.scene.opengl_enabled:
+            self.scene.export_png(path)
+        else:
+            export_figure = self.figure
+            export_figure.savefig(path, dpi=220)
+
+
+class ScanUnionTab(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.figure = Figure(figsize=(5, 5))
+        self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(self.toolbar)
+        left_layout.addWidget(self.canvas)
+        self.scene = OpenGLSceneWidget()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left)
+        splitter.addWidget(self.scene)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([430, 900])
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(splitter)
+
+    def set_placeholder(self, text: str) -> None:
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.axis("off")
+        ax.text(0.5, 0.5, text, ha="center", va="center", fontsize=12)
+        self.canvas.draw_idle()
+        self.scene.clear_scene(text)
+
+    def export_png(self, path: str | Path) -> None:
+        if self.scene.opengl_enabled:
+            self.scene.export_png(path)
+        else:
+            self.figure.savefig(path, dpi=220)
 
 
 class ReleaseNotesTab(QWidget):
@@ -63,10 +202,10 @@ class PlotPanel(QTabWidget):
         super().__init__(parent)
         self.structure_tab = FigureTab()
         self.cuts_tab = FigureTab()
-        self.envelope_tab = FigureTab(projection="3d")
+        self.envelope_tab = GL3DTab()
         self.uv_tab = FigureTab()
-        self.pattern_3d_tab = FigureTab(projection="3d")
-        self.union_tab = FigureTab(projection="3d")
+        self.pattern_3d_tab = GL3DTab()
+        self.union_tab = ScanUnionTab()
         self.release_notes_tab = ReleaseNotesTab()
         self.addTab(self.structure_tab, "结构示意")
         self.addTab(self.cuts_tab, "二维切面")
@@ -132,7 +271,10 @@ class PlotPanel(QTabWidget):
         elif key == "scan_union":
             self._show_placeholder(self.union_tab, text)
 
-    def _show_placeholder(self, tab: FigureTab, text: str) -> None:
+    def _show_placeholder(self, tab: QWidget, text: str) -> None:
+        if hasattr(tab, "set_placeholder"):
+            tab.set_placeholder(text)
+            return
         tab.figure.clear()
         ax = tab.figure.add_subplot(111)
         ax.axis("off")
@@ -279,6 +421,10 @@ class PlotPanel(QTabWidget):
         self.cuts_tab.canvas.draw_idle()
 
     def plot_current_3d(self, envelope: dict[str, np.ndarray | float], derived: DerivedParams, params: BeamParams) -> None:
+        if self.envelope_tab.scene.opengl_enabled:
+            _plot_current_3d_opengl(self.envelope_tab.scene, envelope, derived, params)
+            _set_export_placeholder(self.envelope_tab.figure, self.envelope_tab.canvas, "Current S=S0 3D envelope is shown in the OpenGL view.")
+            return
         fig = self.envelope_tab.figure
         fig.clear()
         ax = fig.add_subplot(111, projection="3d")
@@ -362,6 +508,10 @@ class PlotPanel(QTabWidget):
         self.plot_pattern_3d(uv, params)
 
     def plot_pattern_3d(self, uv: dict[str, np.ndarray | float], params: BeamParams | None = None) -> None:
+        if self.pattern_3d_tab.scene.opengl_enabled:
+            _plot_pattern_3d_opengl(self.pattern_3d_tab.scene, uv, params)
+            _set_export_placeholder(self.pattern_3d_tab.figure, self.pattern_3d_tab.canvas, "3D pattern is shown in the OpenGL view.")
+            return
         fig = self.pattern_3d_tab.figure
         fig.clear()
         ax = fig.add_subplot(111, projection="3d")
@@ -425,6 +575,18 @@ class PlotPanel(QTabWidget):
         self.pattern_3d_tab.canvas.draw_idle()
 
     def plot_scan_union(self, info: dict[str, np.ndarray | float | int], derived: DerivedParams, params: BeamParams) -> None:
+        if self.union_tab.scene.opengl_enabled:
+            fig = self.union_tab.figure
+            fig.clear()
+            axes = [fig.add_subplot(211), fig.add_subplot(212)]
+            for cut_ax, cut in zip(axes, info.get("unionCuts", [])):
+                _plot_scan_union_cut_2d(cut_ax, cut, derived, params)
+            if axes:
+                axes[0].set_xlabel("")
+            fig.subplots_adjust(left=0.16, right=0.96, top=0.93, bottom=0.10, hspace=0.46)
+            self.union_tab.canvas.draw_idle()
+            _plot_scan_union_opengl(self.union_tab.scene, info, derived, params)
+            return
         fig = self.union_tab.figure
         fig.clear()
         gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 1.55, 0.055], height_ratios=[1.0, 1.0], wspace=0.38, hspace=0.50)
@@ -485,6 +647,287 @@ class PlotPanel(QTabWidget):
         ax.view_init(25, 38)
         fig.subplots_adjust(left=0.05, right=0.95, top=0.86, bottom=0.12)
         self.union_tab.canvas.draw_idle()
+
+
+def _set_export_placeholder(figure: Figure, canvas: FigureCanvas, text: str) -> None:
+    figure.clear()
+    ax = figure.add_subplot(111)
+    ax.axis("off")
+    ax.text(0.5, 0.5, text, ha="center", va="center", fontsize=12)
+    canvas.draw_idle()
+
+
+def _plot_current_3d_opengl(
+    scene: OpenGLSceneWidget,
+    envelope: dict[str, np.ndarray | float],
+    derived: DerivedParams,
+    params: BeamParams,
+) -> None:
+    u = np.asarray(envelope["u"], dtype=float)
+    v = np.asarray(envelope["v"], dtype=float)
+    r = np.asarray(envelope["r_env_m"], dtype=float)
+    if not np.any(np.isfinite(r)):
+        scene.clear_scene("Current S=S0 envelope: no finite surface.")
+        return
+    U, V = np.meshgrid(u, v)
+    visible = np.isfinite(r) & ((U * U + V * V) <= 0.999 * 0.999)
+    W = np.sqrt(np.maximum(1.0 - U * U - V * V, 0.0))
+    r_plot = np.where(visible, r, np.nan)
+    x = np.where(visible, r_plot * U, np.nan)
+    y = np.where(visible, r_plot * V, np.nan)
+    z = np.where(visible, r_plot * W, np.nan)
+    max_range = float(envelope.get("max_range_m", np.nan))
+    method_label = str(envelope.get("envelopeMethodLabel", "near-field sampled + far-field extrapolated"))
+    title = f"Current S=S0 3D envelope    max r={_format_range(max_range)}    method={method_label}"
+    _plot_surface_opengl(scene, x, y, z, r_plot, title, derived=derived, params=params, show_direction=True)
+
+
+def _plot_pattern_3d_opengl(scene: OpenGLSceneWidget, uv: dict[str, np.ndarray | float], params: BeamParams | None) -> None:
+    u = np.asarray(uv["U"], dtype=float)
+    v = np.asarray(uv["V"], dtype=float)
+    pattern_db = np.asarray(uv["pattern_db"], dtype=float)
+    visible = np.asarray(uv["visible"], dtype=bool) & np.isfinite(pattern_db)
+    floor_db = float(uv["floor_db"])
+    theta_x = np.where(visible, np.degrees(np.arcsin(np.clip(u, -1.0, 1.0))), np.nan)
+    theta_y = np.where(visible, np.degrees(np.arcsin(np.clip(v, -1.0, 1.0))), np.nan)
+    z = np.where(visible, np.maximum(pattern_db, floor_db), np.nan)
+    title = "3D normalized pattern (dB)"
+    _plot_surface_opengl(
+        scene,
+        theta_x,
+        theta_y,
+        z,
+        z,
+        title,
+        derived=None,
+        params=params,
+        value_min=floor_db,
+        value_max=0.0,
+        show_direction=False,
+    )
+    scan_x = math.degrees(math.asin(max(-1.0, min(1.0, float(uv["scan_u"])))))
+    scan_y = math.degrees(math.asin(max(-1.0, min(1.0, float(uv["scan_v"])))))
+    _add_gl_line(scene, np.array([[scan_x, scan_y, floor_db], [scan_x, scan_y, 0.0]], dtype=float), (1.0, 0.0, 0.0, 1.0), 3.0)
+
+
+def _plot_scan_union_opengl(
+    scene: OpenGLSceneWidget,
+    info: dict[str, np.ndarray | float | int],
+    derived: DerivedParams,
+    params: BeamParams,
+) -> None:
+    u = np.asarray(info.get("u", []), dtype=float)
+    v = np.asarray(info.get("v", []), dtype=float)
+    r_raw = np.asarray(info["Rsurf"], dtype=float)
+    if u.size >= 2 and v.size >= 2:
+        U, V = np.meshgrid(u, v)
+        visible = np.isfinite(r_raw) & ((U * U + V * V) <= 0.999 * 0.999)
+        W = np.sqrt(np.maximum(1.0 - U * U - V * V, 0.0))
+        r = np.where(visible, r_raw, np.nan)
+        x = np.where(visible, r * U, np.nan)
+        y = np.where(visible, r * V, np.nan)
+        z = np.where(visible, r * W, np.nan)
+    else:
+        x = np.asarray(info["Xsurf"], dtype=float)
+        y = np.asarray(info["Ysurf"], dtype=float)
+        z = np.asarray(info["Zsurf"], dtype=float)
+        r = r_raw
+    max_range = float(info["maxRange_m"]) if math.isfinite(float(info["maxRange_m"])) else float("nan")
+    title = (
+        f"Scan-union S=S0 3D envelope    max r={_format_range(max_range)}    "
+        f"centers={info.get('numScanCenters', 'n/a')}"
+    )
+    _plot_surface_opengl(scene, x, y, z, r, title, derived=derived, params=params, show_direction=True)
+
+
+def _plot_surface_opengl(
+    scene: OpenGLSceneWidget,
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    values: np.ndarray,
+    title: str,
+    *,
+    derived: DerivedParams | None,
+    params: BeamParams | None,
+    value_min: float | None = None,
+    value_max: float | None = None,
+    show_direction: bool = False,
+) -> None:
+    if not scene.clear_scene(title):
+        return
+    x_arr = np.asarray(x, dtype=float)
+    y_arr = np.asarray(y, dtype=float)
+    z_arr = np.asarray(z, dtype=float)
+    value_arr = np.asarray(values, dtype=float)
+    display_n = _display_grid_n(params, default=180)
+    x_arr, y_arr, z_arr, value_arr = _limit_surface_grid(
+        x_arr,
+        y_arr,
+        z_arr,
+        value_arr,
+        max_rows=max(36, min(display_n, 220)),
+        max_cols=max(48, min(int(display_n * 4 / 3), 280)),
+    )
+    finite = np.isfinite(x_arr) & np.isfinite(y_arr) & np.isfinite(z_arr) & np.isfinite(value_arr)
+    if not np.any(finite):
+        scene.clear_scene(title + "    no finite surface")
+        return
+
+    finite_values = value_arr[finite]
+    vmin = float(value_min) if value_min is not None else float(np.nanpercentile(finite_values, 2.0))
+    vmax = float(value_max) if value_max is not None else float(np.nanpercentile(finite_values, 98.0))
+    if not math.isfinite(vmin):
+        vmin = float(np.nanmin(finite_values))
+    if not math.isfinite(vmax) or vmax <= vmin:
+        vmax = vmin + 1.0
+
+    mesh_item = _make_gl_mesh_item(x_arr, y_arr, z_arr, value_arr, vmin, vmax)
+    if mesh_item is not None:
+        scene.add_item(mesh_item)
+    else:
+        pos = np.column_stack([x_arr[finite], y_arr[finite], z_arr[finite]]).astype(float)
+        colors = _rgba_for_values(value_arr[finite], vmin, vmax, alpha=0.80)
+        scatter = gl.GLScatterPlotItem(pos=pos, color=colors, size=2.0, pxMode=True)
+        scene.add_item(scatter)
+
+    _add_gl_reference_items(scene, x_arr, y_arr, z_arr, derived, params, show_direction)
+    _set_gl_camera(scene, x_arr, y_arr, z_arr)
+
+
+def _make_gl_mesh_item(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    values: np.ndarray,
+    vmin: float,
+    vmax: float,
+) -> object | None:
+    if gl is None or MeshData is None:
+        return None
+    rows, cols = x.shape
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z) & np.isfinite(values)
+    index = np.full((rows, cols), -1, dtype=np.int32)
+    vertices = np.column_stack([x[finite], y[finite], z[finite]]).astype(np.float32)
+    if vertices.size == 0:
+        return None
+    index[finite] = np.arange(vertices.shape[0], dtype=np.int32)
+    faces: list[list[int]] = []
+    face_values: list[float] = []
+    for row in range(rows - 1):
+        for col in range(cols - 1):
+            a = int(index[row, col])
+            b = int(index[row, col + 1])
+            c = int(index[row + 1, col + 1])
+            d = int(index[row + 1, col])
+            if min(a, b, c, d) < 0:
+                continue
+            val = float(np.nanmean([values[row, col], values[row, col + 1], values[row + 1, col + 1], values[row + 1, col]]))
+            faces.append([a, b, c])
+            face_values.append(val)
+            faces.append([a, c, d])
+            face_values.append(val)
+    if not faces:
+        return None
+    colors = _rgba_for_values(np.asarray(face_values, dtype=float), vmin, vmax, alpha=0.78)
+    mesh = MeshData(vertexes=vertices, faces=np.asarray(faces, dtype=np.int32), faceColors=colors.astype(np.float32))
+    return gl.GLMeshItem(meshdata=mesh, smooth=False, drawFaces=True, drawEdges=False, shader="shaded", glOptions="translucent")
+
+
+def _rgba_for_values(values: np.ndarray, vmin: float, vmax: float, alpha: float) -> np.ndarray:
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    colors = colormaps["viridis"](norm(np.asarray(values, dtype=float)))
+    colors[:, 3] = alpha
+    return colors.astype(np.float32)
+
+
+def _add_gl_reference_items(
+    scene: OpenGLSceneWidget,
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    derived: DerivedParams | None,
+    params: BeamParams | None,
+    show_direction: bool,
+) -> None:
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    max_x = max(float(np.nanmax(np.abs(x[finite]))), 1.0) if np.any(finite) else 1.0
+    max_y = max(float(np.nanmax(np.abs(y[finite]))), 1.0) if np.any(finite) else 1.0
+    max_z = max(float(np.nanmax(np.abs(z[finite]))), 1.0) if np.any(finite) else 1.0
+    grid_size = max(max_x, max_y) * 2.1
+    grid = gl.GLGridItem()
+    grid.setSize(x=grid_size, y=grid_size)
+    spacing = _nice_grid_spacing(grid_size)
+    grid.setSpacing(x=spacing, y=spacing)
+    scene.add_item(grid)
+    _add_gl_line(scene, np.array([[-max_x, 0.0, 0.0], [max_x, 0.0, 0.0]], dtype=float), (0.8, 0.05, 0.05, 1.0), 2.0)
+    _add_gl_line(scene, np.array([[0.0, -max_y, 0.0], [0.0, max_y, 0.0]], dtype=float), (0.05, 0.45, 0.9, 1.0), 2.0)
+    _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, max_z]], dtype=float), (0.05, 0.55, 0.15, 1.0), 2.0)
+    if derived is None:
+        return
+    outline = _aperture_outline_points(derived, params, z=0.0)
+    if outline.shape[0] >= 2:
+        _add_gl_line(scene, outline, (0.0, 0.0, 0.0, 1.0), 2.5)
+    if show_direction:
+        length = max(0.35 * max_z, derived.aperture_m, 1.0)
+        _add_gl_line(scene, np.array([[0.0, 0.0, 0.0], [0.0, 0.0, length]], dtype=float), (0.0, 0.0, 0.0, 1.0), 1.8)
+        _add_gl_line(
+            scene,
+            np.array([[0.0, 0.0, 0.0], [length * derived.u0, length * derived.v0, length * derived.w0]], dtype=float),
+            (1.0, 0.0, 0.0, 1.0),
+            3.0,
+        )
+
+
+def _add_gl_line(scene: OpenGLSceneWidget, points: np.ndarray, color: tuple[float, float, float, float], width: float) -> None:
+    if gl is None:
+        return
+    line = gl.GLLinePlotItem(pos=np.asarray(points, dtype=float), color=color, width=width, antialias=True, mode="line_strip")
+    scene.add_item(line)
+
+
+def _set_gl_camera(scene: OpenGLSceneWidget, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> None:
+    if not scene.opengl_enabled or scene.view is None:
+        return
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    if np.any(finite):
+        span_x = max(float(np.nanmax(x[finite]) - np.nanmin(x[finite])), 1.0)
+        span_y = max(float(np.nanmax(y[finite]) - np.nanmin(y[finite])), 1.0)
+        span_z = max(float(np.nanmax(z[finite]) - np.nanmin(z[finite])), 1.0)
+        distance = 1.9 * max(span_x, span_y, 0.8 * span_z)
+    else:
+        distance = 10.0
+    scene.view.setCameraPosition(distance=distance, elevation=24.0, azimuth=-42.0)
+
+
+def _nice_grid_spacing(size: float) -> float:
+    if not math.isfinite(size) or size <= 0:
+        return 1.0
+    raw = size / 8.0
+    exponent = math.floor(math.log10(raw))
+    base = 10.0 ** exponent
+    scaled = raw / base
+    nice = 1.0 if scaled <= 1.0 else 2.0 if scaled <= 2.0 else 5.0 if scaled <= 5.0 else 10.0
+    return nice * base
+
+
+def _aperture_outline_points(derived: DerivedParams, params: BeamParams | None = None, z: float = 0.0) -> np.ndarray:
+    shape = getattr(params, "array_layout", "rectangular") if params is not None else "rectangular"
+    half_x = derived.dx_aperture_m / 2.0
+    half_y = derived.dy_aperture_m / 2.0
+    if shape == "custom":
+        x, y = _convex_hull_outline(derived.element_x_m, derived.element_y_m)
+    elif shape == "ellipse":
+        t = np.linspace(0.0, 2.0 * math.pi, 145)
+        x = half_x * np.cos(t)
+        y = half_y * np.sin(t)
+    elif shape == "diamond":
+        x = np.array([0.0, half_x, 0.0, -half_x, 0.0])
+        y = np.array([half_y, 0.0, -half_y, 0.0, half_y])
+    else:
+        x = np.array([-half_x, half_x, half_x, -half_x, -half_x])
+        y = np.array([-half_y, -half_y, half_y, half_y, -half_y])
+    return np.column_stack([x, y, np.full_like(x, z, dtype=float)]).astype(float)
 
 
 def _plot_scan_union_cut_2d(ax, cut: dict[str, object], derived: DerivedParams, params: BeamParams) -> None:

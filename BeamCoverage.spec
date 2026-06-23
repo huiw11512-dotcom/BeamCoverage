@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_submodules
+
 
 a = Analysis(
     ['main.py'],
@@ -10,11 +12,11 @@ a = Analysis(
         ('resources\\beamcoverage_icon.ico', 'resources'),
         ('resources\\beamcoverage_icon.png', 'resources'),
     ],
-    hiddenimports=[],
+    hiddenimports=collect_submodules('pyqtgraph.opengl') + collect_submodules('OpenGL'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas', 'scipy', 'pyqtgraph'],
+    excludes=['pandas', 'scipy'],
     noarchive=False,
     optimize=0,
 )

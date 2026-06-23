@@ -1,5 +1,13 @@
 # BeamCoverage 更新说明
 
+## 3.1.1
+
+- 将当前三维包络、三维方向图和扫描并集三维预览的交互显示层切换为 PyQtGraph OpenGL；计算核心和 MATLAB 原型复现逻辑不变。
+- 三维图拖拽、缩放、平移时不再依赖 Matplotlib 3D 逐帧重绘整张坐标轴，降低“卡顿”和文字重叠风险。
+- OpenGL 不可用或自动化无界面测试环境下自动回退到 Matplotlib 渲染，保证打包 smoke test、Excel 报告和离线验证流程仍可运行。
+- 当前 PNG 导出兼容 OpenGL 视图截图，普通二维图仍使用原 Matplotlib 导出路径。
+- 同步 Windows EXE 元数据、软件内版本号、GitHub 更新检查版本和 Android Preview versionName。
+
 ## 3.1.0
 
 - 默认启用自动采样策略：根据频率、阵列电尺寸、单元间距/波长比、阵列长宽比和计算模式自动提高二维切面、三维包络、u-v 方向图、扫描并集和 3D 显示网格采样。

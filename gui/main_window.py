@@ -561,12 +561,16 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "PNG 导出不可用", str(exc))
             return
-        figure = self.plot_panel.current_figure()
         path, _ = QFileDialog.getSaveFileName(self, "导出当前图形", "beamcoverage_plot.png", "PNG 文件 (*.png)")
         if not path:
             return
         try:
-            export_figure_png(figure, path)
+            current_widget = self.plot_panel.widget(idx)
+            if hasattr(current_widget, "export_png"):
+                current_widget.export_png(path)
+            else:
+                figure = self.plot_panel.current_figure()
+                export_figure_png(figure, path)
             self.statusBar().showMessage(f"PNG 已导出：{path}", 8000)
         except Exception as exc:
             QMessageBox.critical(self, "PNG 导出失败", str(exc))
