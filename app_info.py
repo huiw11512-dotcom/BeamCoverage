@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "BeamCoverage"
-APP_VERSION = "3.1.5"
+APP_VERSION = "3.1.6"
 APP_TITLE = APP_NAME
 CLI_DESCRIPTION = f"{APP_NAME} {APP_VERSION}"
 APP_EXE_NAME = f"{APP_NAME}.exe"

@@ -771,7 +771,7 @@ def _plot_current_3d_opengl(
         params=params,
         show_direction=True,
         view_mode="envelope",
-        cmap_name="viridis",
+        cmap_name="envelope",
         alpha_min=0.58,
         alpha_max=0.90,
     )
@@ -849,7 +849,7 @@ def _plot_scan_union_opengl(
         params=params,
         show_direction=True,
         view_mode="envelope",
-        cmap_name="viridis",
+        cmap_name="envelope",
         alpha_min=0.55,
         alpha_max=0.88,
     )
@@ -872,6 +872,7 @@ def _plot_surface_opengl(
     cmap_name: str = "turbo",
     alpha_min: float = 0.55,
     alpha_max: float = 0.94,
+    geometry_shading: bool = True,
 ) -> None:
     x_arr = np.asarray(x, dtype=float)
     y_arr = np.asarray(y, dtype=float)
@@ -915,6 +916,7 @@ def _plot_surface_opengl(
         cmap_name=cmap_name,
         alpha_min=alpha_min,
         alpha_max=alpha_max,
+        geometry_shading=geometry_shading,
     )
     if mesh_item is not None:
         scene.add_item(mesh_item)
@@ -947,6 +949,7 @@ def _make_gl_mesh_item(
     cmap_name: str,
     alpha_min: float,
     alpha_max: float,
+    geometry_shading: bool,
 ) -> object | None:
     if gl is None or MeshData is None:
         return None
@@ -959,6 +962,7 @@ def _make_gl_mesh_item(
     index[finite] = np.arange(vertices.shape[0], dtype=np.int32)
     faces: list[list[int]] = []
     face_values: list[float] = []
+    face_z: list[float] = []
     for row in range(rows - 1):
         for col in range(cols - 1):
             a = int(index[row, col])
@@ -970,24 +974,34 @@ def _make_gl_mesh_item(
             val = float(np.nanmean([values[row, col], values[row, col + 1], values[row + 1, col + 1], values[row + 1, col]]))
             faces.append([a, b, c])
             face_values.append(val)
+            face_z.append(float(np.nanmean([z[row, col], z[row, col + 1], z[row + 1, col + 1]])))
             faces.append([a, c, d])
             face_values.append(val)
+            face_z.append(float(np.nanmean([z[row, col], z[row + 1, col + 1], z[row + 1, col]])))
     if not faces:
         return None
+    faces_arr = np.asarray(faces, dtype=np.int32)
+    face_values_arr = np.asarray(face_values, dtype=float)
+    face_z_arr = np.asarray(face_z, dtype=float)
     colors = _rgba_for_values(
-        np.asarray(face_values, dtype=float),
+        face_values_arr,
         vmin,
         vmax,
         alpha=alpha_max,
         alpha_min=alpha_min,
         cmap_name=cmap_name,
     )
-    mesh = MeshData(vertexes=vertices, faces=np.asarray(faces, dtype=np.int32), faceColors=colors.astype(np.float32))
+    if geometry_shading:
+        if cmap_name == "envelope":
+            colors = _apply_envelope_display_contrast(vertices, faces_arr, colors, face_values_arr, face_z_arr, vmin, vmax)
+        colors = _apply_face_shading(vertices, faces_arr, colors, face_z_arr)
+    mesh = MeshData(vertexes=vertices, faces=faces_arr, faceColors=colors.astype(np.float32))
     return gl.GLMeshItem(
         meshdata=mesh,
         smooth=False,
         drawFaces=True,
-        drawEdges=False,
+        drawEdges=geometry_shading,
+        edgeColor=(0.07, 0.14, 0.16, 0.16) if geometry_shading else None,
         shader=None,
         computeNormals=False,
         glOptions="translucent",
@@ -1004,12 +1018,17 @@ def _rgba_for_values(
     cmap_name: str = "turbo",
 ) -> np.ndarray:
     denom = max(float(vmax) - float(vmin), 1e-12)
-    scaled = np.clip((np.asarray(values, dtype=float) - float(vmin)) / denom, 0.0, 1.0)
-    try:
-        cmap = colormaps[cmap_name]
-    except KeyError:
-        cmap = colormaps["viridis"]
-    colors = cmap(scaled)
+    raw_values = np.asarray(values, dtype=float)
+    scaled = np.clip((raw_values - float(vmin)) / denom, 0.0, 1.0)
+    if cmap_name == "envelope":
+        mapped = _contrast_scale(raw_values, scaled)
+        colors = _envelope_rgba(mapped)
+    else:
+        try:
+            cmap = colormaps[cmap_name]
+        except KeyError:
+            cmap = colormaps["viridis"]
+        colors = cmap(scaled)
     # OpenGL's unlit face colors are more legible if the darkest colors are lifted slightly.
     colors[:, :3] = np.clip(colors[:, :3] * 0.88 + 0.12, 0.0, 1.0)
     if alpha_min is None:
@@ -1017,6 +1036,118 @@ def _rgba_for_values(
     else:
         colors[:, 3] = np.clip(alpha_min + (alpha - alpha_min) * np.power(scaled, 0.68), 0.05, 1.0)
     return colors.astype(np.float32)
+
+
+def _contrast_scale(values: np.ndarray, scaled: np.ndarray) -> np.ndarray:
+    finite = np.isfinite(values)
+    if not np.any(finite):
+        return scaled
+    contrast = np.zeros_like(scaled, dtype=float)
+    finite_values = values[finite]
+    if finite_values.size <= 1 or float(np.nanmax(finite_values) - np.nanmin(finite_values)) <= 1e-12:
+        contrast[finite] = scaled[finite]
+        return np.clip(contrast, 0.0, 1.0)
+    order = np.argsort(finite_values, kind="mergesort")
+    ranks = np.empty_like(finite_values, dtype=float)
+    ranks[order] = np.linspace(0.0, 1.0, finite_values.size)
+    # Blend physical distance scaling with rank stretching so broad high-value lobes
+    # remain visually separable without changing the underlying calculation.
+    contrast[finite] = 0.42 * np.power(scaled[finite], 0.62) + 0.58 * ranks
+    return np.clip(contrast, 0.0, 1.0)
+
+
+def _envelope_rgba(mapped: np.ndarray) -> np.ndarray:
+    x = np.array([0.00, 0.16, 0.32, 0.48, 0.64, 0.80, 1.00], dtype=float)
+    rgb = np.array(
+        [
+            [0.09, 0.07, 0.26],
+            [0.11, 0.25, 0.58],
+            [0.05, 0.55, 0.73],
+            [0.10, 0.68, 0.46],
+            [0.84, 0.70, 0.22],
+            [0.90, 0.34, 0.18],
+            [0.56, 0.08, 0.17],
+        ],
+        dtype=float,
+    )
+    clipped = np.clip(mapped, 0.0, 1.0)
+    colors = np.empty((clipped.size, 4), dtype=float)
+    colors[:, 0] = np.interp(clipped, x, rgb[:, 0])
+    colors[:, 1] = np.interp(clipped, x, rgb[:, 1])
+    colors[:, 2] = np.interp(clipped, x, rgb[:, 2])
+    colors[:, 3] = 1.0
+    return colors
+
+
+def _apply_face_shading(vertices: np.ndarray, faces: np.ndarray, colors: np.ndarray, face_z: np.ndarray) -> np.ndarray:
+    if faces.size == 0 or colors.size == 0:
+        return colors
+    tri = vertices[faces]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    norm = np.linalg.norm(normals, axis=1)
+    valid = norm > 1e-12
+    if np.any(valid):
+        normals[valid] /= norm[valid, None]
+    light = np.array([-0.32, -0.42, 0.85], dtype=float)
+    light /= np.linalg.norm(light)
+    diffuse = np.abs(normals @ light)
+    diffuse = np.where(np.isfinite(diffuse), diffuse, 0.0)
+    z_min = float(np.nanmin(face_z)) if np.any(np.isfinite(face_z)) else 0.0
+    z_max = float(np.nanmax(face_z)) if np.any(np.isfinite(face_z)) else z_min + 1.0
+    z_scaled = np.clip((face_z - z_min) / max(z_max - z_min, 1e-12), 0.0, 1.0)
+    shade = 0.42 + 0.48 * diffuse + 0.18 * np.power(z_scaled, 0.45)
+    shaded = colors.copy()
+    shaded[:, :3] = np.clip(shaded[:, :3] * shade[:, None], 0.0, 1.0)
+    return shaded.astype(np.float32)
+
+
+def _apply_envelope_display_contrast(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    colors: np.ndarray,
+    face_values: np.ndarray,
+    face_z: np.ndarray,
+    vmin: float,
+    vmax: float,
+) -> np.ndarray:
+    if faces.size == 0 or colors.size == 0:
+        return colors
+    centers = np.nanmean(vertices[faces], axis=1)
+    x = centers[:, 0]
+    y = centers[:, 1]
+    z = centers[:, 2]
+    x_scaled = _unit_scale(x)
+    y_scaled = _unit_scale(y)
+    z_scaled = _unit_scale(z if np.any(np.isfinite(z)) else face_z)
+    r_scaled = np.clip((face_values - float(vmin)) / max(float(vmax) - float(vmin), 1e-12), 0.0, 1.0)
+    rank_scaled = _contrast_scale(face_values, r_scaled)
+    lateral = np.sqrt((x_scaled - 0.5) ** 2 + (y_scaled - 0.5) ** 2)
+    lateral = _unit_scale(lateral)
+    x0 = float(np.nanmedian(x[np.isfinite(x)])) if np.any(np.isfinite(x)) else 0.0
+    y0 = float(np.nanmedian(y[np.isfinite(y)])) if np.any(np.isfinite(y)) else 0.0
+    azimuth = np.arctan2(y - y0, x - x0)
+    azimuth_tint = 0.5 + 0.5 * np.sin(3.0 * azimuth + 1.7 * z_scaled)
+    display_value = np.clip(0.30 * rank_scaled + 0.34 * z_scaled + 0.18 * lateral + 0.18 * azimuth_tint, 0.0, 1.0)
+    display_value = np.clip(0.04 + 0.86 * display_value, 0.02, 0.92)
+    contrast_colors = _envelope_rgba(display_value)
+    blended = colors.copy()
+    blended[:, :3] = np.clip(0.24 * colors[:, :3] + 0.76 * contrast_colors[:, :3], 0.0, 1.0)
+    return blended.astype(np.float32)
+
+
+def _unit_scale(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    finite = np.isfinite(arr)
+    out = np.zeros_like(arr, dtype=float)
+    if not np.any(finite):
+        return out
+    lo = float(np.nanmin(arr[finite]))
+    hi = float(np.nanmax(arr[finite]))
+    if hi <= lo:
+        out[finite] = 0.5
+    else:
+        out[finite] = (arr[finite] - lo) / (hi - lo)
+    return np.clip(out, 0.0, 1.0)
 
 
 def _add_gl_reference_items(
